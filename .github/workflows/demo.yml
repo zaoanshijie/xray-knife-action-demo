@@ -1,0 +1,80 @@
+name: demo
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  use-the-action:
+    runs-on: ubuntu-latest
+    steps:
+      # ---------------------------------------------------------------------
+      # Test fixture: a throw-away Xray server plus a subscription that points
+      # at it, so this demo needs no real account. Swap it for your own
+      # subscription secret once you try the action for real.
+      # ---------------------------------------------------------------------
+      - name: Start a local Xray server
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o /tmp/xray.zip \
+            https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+          mkdir -p /tmp/xray
+          unzip -q -o /tmp/xray.zip -d /tmp/xray
+          chmod +x /tmp/xray/xray
+          cat > /tmp/xray/server.json <<'EOF'
+          {
+            "log": { "loglevel": "warning" },
+            "inbounds": [
+              {
+                "listen": "127.0.0.1",
+                "port": 20000,
+                "protocol": "vless",
+                "settings": {
+                  "clients": [{ "id": "b831381d-6324-4d53-ad4f-8cda48b30811" }],
+                  "decryption": "none"
+                }
+              }
+            ],
+            "outbounds": [{ "protocol": "freedom" }]
+          }
+          EOF
+          nohup /tmp/xray/xray run -c /tmp/xray/server.json > /tmp/xray/server.log 2>&1 &
+          for _ in $(seq 1 20); do ss -ltn | grep -q ':20000 ' && break; sleep 0.5; done
+          ss -ltn | grep ':20000 '
+
+      - name: Serve the subscription
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/sub
+          printf '%s' 'vless://b831381d-6324-4d53-ad4f-8cda48b30811@127.0.0.1:20000?encryption=none&security=none&type=tcp#demo-node' \
+            | base64 -w0 > /tmp/sub/sub.txt
+          printf 'hello-through-xray-knife\n' > /tmp/sub/target.txt
+          (cd /tmp/sub && nohup python3 -m http.server 18080 >/dev/null 2>&1 &)
+          for _ in $(seq 1 20); do curl -fsS http://127.0.0.1:18080/sub.txt >/dev/null && break; sleep 0.5; done
+
+      # ---------------------------------------------------------------------
+      # The action itself — this is the only line you need in your own repo.
+      # ---------------------------------------------------------------------
+      - uses: zaoanshijie/xray-knife-action@v1
+        id: net
+        with:
+          subscription: http://127.0.0.1:18080/sub.txt
+          test-url: http://127.0.0.1:18080/target.txt
+          export-env: true
+
+      - name: Use the proxy explicitly
+        run: |
+          set -euo pipefail
+          echo "xray-knife  : ${{ steps.net.outputs.version }}"
+          echo "nodes       : ${{ steps.net.outputs.valid-nodes }}/${{ steps.net.outputs.total-nodes }}"
+          echo "http proxy  : ${{ steps.net.outputs.proxy }}"
+          curl -fsS -x "${{ steps.net.outputs.proxy }}" http://127.0.0.1:18080/target.txt
+
+      - name: Or just let the environment variables do the work
+        run: |
+          set -euo pipefail
+          echo "HTTPS_PROXY=$HTTPS_PROXY"
+          curl -fsS -m 30 https://api.ipify.org && echo
