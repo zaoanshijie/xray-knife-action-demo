@@ -71,10 +71,14 @@ jobs:
           echo "xray-knife  : ${{ steps.net.outputs.version }}"
           echo "nodes       : ${{ steps.net.outputs.valid-nodes }}/${{ steps.net.outputs.total-nodes }}"
           echo "http proxy  : ${{ steps.net.outputs.proxy }}"
+          echo "socks proxy : ${{ steps.net.outputs.socks-proxy }}"
           curl -fsS -x "${{ steps.net.outputs.proxy }}" http://127.0.0.1:18080/target.txt
+          curl -fsS -x "${{ steps.net.outputs.socks-proxy }}" http://127.0.0.1:18080/target.txt
+          curl -fsS -m 30 -x "${{ steps.net.outputs.proxy }}" https://api.ipify.org && echo
 
       - name: Or just let the environment variables do the work
         run: |
           set -euo pipefail
           echo "HTTPS_PROXY=$HTTPS_PROXY"
+          echo "ALL_PROXY=$ALL_PROXY"
           curl -fsS -m 30 https://api.ipify.org && echo
