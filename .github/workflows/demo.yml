@@ -10,6 +10,9 @@ permissions:
 jobs:
   use-the-action:
     runs-on: ubuntu-latest
+    # Pinned: this fixture only has to behave like "a node that works".
+    env:
+      XRAY_CORE_VERSION: v26.10.21
     steps:
       # ---------------------------------------------------------------------
       # Test fixture: a throw-away Xray server plus a subscription that points
@@ -20,10 +23,13 @@ jobs:
         run: |
           set -euo pipefail
           curl -fsSL --retry 3 -o /tmp/xray.zip \
-            https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+            "https://github.com/XTLS/Xray-core/releases/download/${XRAY_CORE_VERSION}/Xray-linux-64.zip"
           mkdir -p /tmp/xray
           unzip -q -o /tmp/xray.zip -d /tmp/xray
           chmod +x /tmp/xray/xray
+          # Xray-core >= v26.10.21 blackholes private destinations by default
+          # for vless/vmess/trojan/shadowsocks inbounds, so this loopback
+          # fixture needs an explicit allow final rule.
           cat > /tmp/xray/server.json <<'EOF'
           {
             "log": { "loglevel": "warning" },
@@ -38,12 +44,21 @@ jobs:
                 }
               }
             ],
-            "outbounds": [{ "protocol": "freedom" }]
+            "outbounds": [
+              {
+                "protocol": "freedom",
+                "settings": {
+                  "finalRules": [
+                    { "action": "allow", "ip": ["127.0.0.0/8", "::1/128"] }
+                  ]
+                }
+              }
+            ]
           }
           EOF
           nohup /tmp/xray/xray run -c /tmp/xray/server.json > /tmp/xray/server.log 2>&1 &
           for _ in $(seq 1 20); do ss -ltn | grep -q ':20000 ' && break; sleep 0.5; done
-          ss -ltn | grep ':20000 '
+          ss -ltn | grep ':20000 ' || { cat /tmp/xray/server.log; exit 1; }
 
       - name: Serve the subscription
         run: |
@@ -82,3 +97,9 @@ jobs:
           echo "HTTPS_PROXY=$HTTPS_PROXY"
           echo "ALL_PROXY=$ALL_PROXY"
           curl -fsS -m 30 https://api.ipify.org && echo
+
+      - name: Show the local Xray server log after a failure
+        if: failure()
+        run: |
+          echo "--- /tmp/xray/server.log ---"
+          tail -n 50 /tmp/xray/server.log || true
